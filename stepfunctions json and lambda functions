@@ -1,0 +1,166 @@
+{
+  "StartAt": "ValidateInput",
+  "States": {
+    "ValidateInput": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:792642164683:function:validate_application_lambda",
+      "Next": "CreditCheck"
+    },
+    "CreditCheck": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:792642164683:function:simulate_credit_check_lambda",
+      "Next": "RiskScoring"
+    },
+    "RiskScoring": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:792642164683:function:calculate_risk_score_lambda",
+      "Next": "Decision"
+    },
+    "Decision": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:792642164683:function:decision_lambda",
+      "Next": "SendEmail"
+    },
+    "SendEmail": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:792642164683:function:send_email_lambda",
+      "End": true
+    }
+  }
+}
+
+
+import boto3
+
+def lambda_handler(event, context):
+    """
+    Sends a confirmation email to the applicant using Amazon SES.
+    The message content includes the pre-approval decision.
+    The email address must be verified in SES if your account is in sandbox mode.
+    """
+
+    ses = boto3.client('ses')
+
+    name = event["data"]["name"]
+    email = event["data"]["email"]
+    account = event["data"]["account_info"]["account"]
+    decision = event["decision"]
+
+    ses.send_email(
+        Source='learnthetechnologywithbk@gmail.com',  # Replace with your SES-verified email
+        Destination={'ToAddresses': [email]},
+        Message={
+            'Subject': {'Data': 'Your Mortgage Pre-Approval Status'},
+            'Body': {
+                'Text': {
+                    'Data': f"Hi {name},\n\nAccount: {account}\n\nYour mortgage pre-approval status is: {decision}.\n\nThanks for applying!"
+                }
+            }
+        }
+    )
+
+    return {
+        "status": "email_sent"
+    }
+
+
+import json
+
+def lambda_handler(event, context):
+    """
+    Makes a pre-approval decision based on the calculated risk score.
+    If the risk score is 0.6 or higher, the application is 'Approved'.
+    Otherwise, it is marked as 'Needs Review'.
+    """
+
+    risk = event["risk_score"]
+    decision = "Approved" if risk >= 0.6 else "Needs Review"
+
+    return {
+        "status": "decision_made",
+        "decision": decision,
+        "data": event["data"]
+    }
+
+
+import json
+
+def lambda_handler(event, context):
+    """
+    Calculates a risk score based on the applicant’s credit score and income.
+    A simple formula is used: (credit_score / 850) * (income / 100,000).
+    The result is returned along with the original data.
+    """
+
+    data = event["data"]
+    risk = (data["credit_score"] / 850) * (data["income"] / 100000)
+
+    return {
+        "status": "scored",
+        "risk_score": risk,
+        "data": data
+    }
+
+
+import json
+
+def lambda_handler(event, context):
+    """
+    This function validates the incoming application data.
+    It checks for the presence of required fields: name, email, and income.
+    If any field is missing, it raises an error.
+    Otherwise, it returns a success message and the original data.
+    """
+
+    required_fields = ["name", "email", "income"]
+
+    for field in required_fields:
+        if field not in event:
+            raise ValueError(f"Missing field: {field}")
+
+    return {
+        "status": "validated",
+        "data": event
+    }
+
+
+import requests
+import random
+
+def lambda_handler(event, context):
+    """
+    Simulate a credit check:
+    - Calls external API to retrieve user account info based on name
+    - Generates a fake credit score
+    """
+
+    name = event.get("data", {}).get("name")
+
+    if not name:
+        raise ValueError("Missing 'name' in input data")
+
+    # Call the external API
+    try:
+        response = requests.get("https://67fc529c1f8b41c816863253.mockapi.io/Accounts")
+        accounts = response.json()
+    except Exception as e:
+        raise Exception(f"Error calling external API: {e}")
+
+    # Find the user by name (case-insensitive match)
+    user_account = next((acc for acc in accounts if acc["name"].lower() == name.lower()), None)
+
+    if not user_account:
+        raise ValueError(f"No account found for user: {name}")
+
+    # Simulate a credit score (just for demo)
+    fake_credit_score = random.randint(580, 800)
+
+    # Add data to the event for downstream steps
+    event["data"]["credit_score"] = fake_credit_score
+    event["data"]["account_info"] = user_account
+
+    return {
+        "status": "credit_checked",
+        "credit_score": fake_credit_score,
+        "data": event["data"]
+    }
